@@ -1,9 +1,9 @@
 ﻿
 using DbgX;
+using DbgX.Interfaces.Services.Internal;
 using DbgX.Requests;
 using Microsoft.Extensions.ObjectPool;
 using System.Collections.Concurrent;
-using System.Diagnostics;
 using System.Text;
 using WindowsDebugger.DbgEng;
 
@@ -18,6 +18,28 @@ namespace WinDbgKernel
         private static readonly TaskCompletionSource<DebugEngine> _engineTcs = new TaskCompletionSource<DebugEngine>();
         private static readonly ObjectPool<StringBuilder> _builderPool = new DefaultObjectPoolProvider().CreateStringBuilderPool();
         private static DebuggerOutput? _output;
+        
+        private static DbgEngPath? _dbgengPath;
+
+        public static void SetDbgEngPath(string path)
+        {
+            _dbgengPath = string.IsNullOrWhiteSpace(path) ? null : new(path);
+        }
+
+        class DbgEngPath(string path) : IDbgEnginePathCustomization
+        {
+            public string HomeDirectory { get; } = path;
+
+            public string GetEngHostPath(string architecture)
+            {
+                return Path.Combine(HomeDirectory, "EngHost.exe");
+            }
+
+            public string GetEnginePath(string architecture)
+            {
+                return HomeDirectory;
+            }
+        }
 
         public class DebuggerOutput : IDisposable
         {
@@ -82,8 +104,8 @@ namespace WinDbgKernel
             _syncContext = new DebuggerSynchronizationContext(_workQueue);
             _scheduler = new DebuggerTaskScheduler(_syncContext);
 
-            _debuggerThread = new Thread(ThreadProc) { IsBackground = true, Name = "Debug Scheduler" };
-            _debuggerThread.SetApartmentState(ApartmentState.STA);
+            _debuggerThread = new Thread(ThreadProc) { IsBackground = false, Name = "DbgEng Controller Thread" };
+            //_debuggerThread.SetApartmentState(ApartmentState.STA);
             _debuggerThread.Start();
         }
 
@@ -94,7 +116,7 @@ namespace WinDbgKernel
             SynchronizationContext.SetSynchronizationContext(_syncContext);
 
             // Initialize the DebugEngine and set the TaskCompletionSource
-            var engine = new DebugEngine(null, null, null, null, false, null, _syncContext);
+            var engine = new DebugEngine(_dbgengPath, null, null, null, false, null, _syncContext);
             engine.SendRequestAsync(new ExecuteRequest(".prefer_dml 0"));
             engine.DmlOutput += RecieveOutput;
             _engineTcs.SetResult(engine);

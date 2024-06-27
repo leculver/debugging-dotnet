@@ -4,19 +4,22 @@ using System.CommandLine;
 using DbgX;
 using DbgX.Requests.Initialization;
 using DbgX.Requests;
+using System.Runtime.InteropServices;
 
 namespace WinDbgKernel
 {
     public class WinDbgKernel : Kernel, IKernelCommandHandler<SubmitCode>
     {
         const string LoadDumpCommand = "#!loadDump";
-        const string SetSymPathCommand = "#!sympath";
+        const string SymPathCommand = "#!sympath";
+        const string DbgEngPathCommand = "#!dbgengPath";
         private string? _sympath;
 
         public WinDbgKernel() : base("windbg")
         {
             RegisterSymPathCommand();
             RegisterLoadDumpCommand();
+            RegisterWindbgPathCommand();
 
             _sympath = Environment.GetEnvironmentVariable("_NT_SYMBOL_PATH");
             if (string.IsNullOrWhiteSpace(_sympath))
@@ -26,8 +29,8 @@ namespace WinDbgKernel
         private void RegisterSymPathCommand()
         {
             var path = new Argument<string>("path", "Path to the WinDbg executable");
-            var setSymPathCommand = new Command(SetSymPathCommand) { path };
-            setSymPathCommand.SetHandler(symPath => SetSymPath(symPath), path);
+            var setSymPathCommand = new Command(SymPathCommand) { path };
+            setSymPathCommand.SetHandler(SetSymPath, path);
             AddDirective(setSymPathCommand);
         }
 
@@ -35,8 +38,16 @@ namespace WinDbgKernel
         {
             var dumpFile = new Argument<string>("dumpFile", "Path to the dump file");
             var loadDumpCommand = new Command(LoadDumpCommand) { dumpFile };
-            loadDumpCommand.SetHandler(dumpFile => LoadDump(dumpFile), dumpFile);
+            loadDumpCommand.SetHandler(LoadDump, dumpFile);
             AddDirective(loadDumpCommand);
+        }
+
+        private void RegisterWindbgPathCommand()
+        {
+            var path = new Argument<string>("path", "Path to the WinDbg executable");
+            var setDbgEngPathCommand = new Command(DbgEngPathCommand) { path };
+            setDbgEngPathCommand.SetHandler(SetDbgEngPath, path);
+            AddDirective(setDbgEngPathCommand);
         }
 
         public async Task HandleAsync(SubmitCode command, KernelInvocationContext context)
@@ -95,17 +106,18 @@ namespace WinDbgKernel
                     else
                         Console.WriteLine($"Failed to set symbol path '{_sympath}'.");
                 }
-
-                Console.WriteLine(output.Output);
-                Console.WriteLine(output.Errors);
-                Console.WriteLine(output.Warnings);
-                Console.WriteLine(output.Symbols);
             });
         }
 
         private Task SetSymPath(string path)
         {
             _sympath = path;
+            return Task.CompletedTask;
+        }
+
+        private static Task SetDbgEngPath(string path)
+        {
+            WinDbgThread.SetDbgEngPath(path);
             return Task.CompletedTask;
         }
     }
