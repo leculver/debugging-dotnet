@@ -45,27 +45,26 @@ namespace WinDbgKernel
 
         public async Task HandleAsync(SubmitCode command, KernelInvocationContext context)
         {
-            if (_dbgeng is null)
+            string result = await WinDbgThread.Queue(async () =>
             {
-                context.Fail(command, message: $"No engine is loaded.  Use {LoadDumpCommand} first.");
-                return;
-            }
+                DebugEngine engine = await WinDbgThread.GetDebugEngine().ConfigureAwait(true);
+                using IDisposable output = WinDbgThread.CaptureOutput();
+                bool res = await engine.SendRequestAsync(new ExecuteRequest("k")).ConfigureAwait(true);
+                return output.ToString() ?? "";
+            });
 
-            string result = await _dbgeng.Execute(command.Code);
-            Console.WriteLine(result);
+            context.DisplayStandardOut(result);
             Console.WriteLine("complete");
         }
 
-        public Task LoadDump(string dumpFile)
+        public async Task LoadDump(string dumpFile)
         {
-            if (_dbgeng is not null)
+            await WinDbgThread.Queue(async () =>
             {
-                _dbgeng.Dispose();
-                _dbgeng = null;
-            }
-
-            _dbgeng = DbgEngWrapper.LoadDump(dumpFile);
-            return Task.CompletedTask;
+                DebugEngine engine = await WinDbgThread.GetDebugEngine().ConfigureAwait(true);
+                bool res = await engine.SendRequestAsync(new OpenDumpFileRequest(dumpFile, new())).ConfigureAwait(true);
+                Console.WriteLine(res);
+            });
         }
 
         private Task SetSymPath(string path)

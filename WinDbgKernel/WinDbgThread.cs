@@ -1,7 +1,9 @@
 ﻿
 using DbgX;
 using DbgX.Requests;
+using Microsoft.Extensions.ObjectPool;
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Text;
 
 namespace WinDbgKernel
@@ -13,7 +15,32 @@ namespace WinDbgKernel
         private static readonly BlockingCollection<Action> _workQueue = new BlockingCollection<Action>();
         private static readonly DebuggerTaskScheduler _scheduler;
         private static readonly TaskCompletionSource<DebugEngine> _engineTcs = new TaskCompletionSource<DebugEngine>();
-        private static readonly StringBuilder _output = new();
+        private static StringBuilder? _output;
+
+        private static readonly ObjectPool<StringBuilder> _builderPool = new DefaultObjectPoolProvider().CreateStringBuilderPool();
+
+        internal class OutputHolder : IDisposable
+        {
+            private readonly StringBuilder _buffer;
+
+            public OutputHolder()
+            {
+                Debug.Assert(WinDbgThread._output is null);
+                _buffer = _builderPool.Get();
+                WinDbgThread._output = _buffer;
+            }
+
+            public void Dispose()
+            {
+                Debug.Assert(WinDbgThread._output == _buffer);
+                WinDbgThread._output = null;
+                _builderPool.Return(_buffer);
+            }
+
+            public override string ToString() => _buffer.ToString();
+        }
+
+        public static IDisposable CaptureOutput() => new OutputHolder();
 
         static WinDbgThread()
         {
@@ -21,6 +48,7 @@ namespace WinDbgKernel
             _scheduler = new DebuggerTaskScheduler(_syncContext);
 
             _debuggerThread = new Thread(ThreadProc) { IsBackground = true, Name = "Debug Scheduler" };
+            _debuggerThread.SetApartmentState(ApartmentState.STA);
             _debuggerThread.Start();
         }
 
@@ -45,22 +73,38 @@ namespace WinDbgKernel
 
         private static void RecieveOutput(object? sender, OutputEventArgs e)
         {
-            Console.WriteLine($"{e.Mask} - {e.Output}");
-            lock (_output)
-                _output.Append(e.Output);
+            StringBuilder? output = _output;
+            if (output is not null)
+                lock (output)
+                    output.Append(e.Output);
         }
 
-        public static Task Queue(Action workItem)
+        public static Task Queue(Func<Task> workItem)
         {
             TaskCompletionSource tcs = new();
-            _workQueue.Add(() =>
+            _workQueue.Add(async () =>
             {
-                workItem();
+                await workItem().ConfigureAwait(true);
                 tcs.SetResult();
 
                 lock (_output)
                     _output.Clear();
             });
+            return tcs.Task;
+        }
+
+        public static Task<T> Queue<T>(Func<Task<T>> workItem)
+        {
+            TaskCompletionSource<T> tcs = new();
+            _workQueue.Add(async () =>
+            {
+                T t = await workItem().ConfigureAwait(true);
+                tcs.SetResult(t);
+
+                lock (_output)
+                    _output.Clear();
+            });
+
             return tcs.Task;
         }
 
