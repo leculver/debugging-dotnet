@@ -4,6 +4,7 @@ using System.CommandLine;
 using DbgX;
 using DbgX.Requests.Initialization;
 using DbgX.Requests;
+using DbgX.Interfaces.Services;
 
 namespace WinDbgKernel
 {
@@ -15,6 +16,7 @@ namespace WinDbgKernel
         const string DbgEngPathCommand = "#!dbgengPath";
         private string? _sympath;
         private static bool _displaySymbols;
+        private bool _isRunning;
 
         public WinDbgKernel() : base("windbg")
         {
@@ -62,12 +64,25 @@ namespace WinDbgKernel
 
         public async Task HandleAsync(SubmitCode command, KernelInvocationContext context)
         {
-            foreach (var line in command.Code.Split('\n').Where(x => !string.IsNullOrWhiteSpace(x)).Select(x => x.Trim()))
-                await RunOneCommand(line, context);
+            var commands = from line in command.Code.Split('\n')
+                            let trimmed = line.Trim()
+                            where !string.IsNullOrWhiteSpace(trimmed)
+                            where !trimmed.StartsWith("#!") && !trimmed.StartsWith('*')
+                            select new string(trimmed);
+
+            foreach (var line in commands)
+                if (!await RunOneCommand(line, context))
+                    break;
         }
 
-        private static async Task RunOneCommand(string line, KernelInvocationContext context)
+        private async Task<bool> RunOneCommand(string line, KernelInvocationContext context)
         {
+            if (!_isRunning)
+            {
+                context.DisplayStandardError($"No dump file loaded. Use the '{LoadDumpCommand}' directive to load a dump file.");
+                return false;
+            }
+
             await WinDbgThread.Queue(async () =>
             {
                 DebugEngine engine = await WinDbgThread.GetDebugEngine().ConfigureAwait(true);
@@ -77,6 +92,8 @@ namespace WinDbgKernel
 
                 WriteErrorsAndSymbols(context, output);
             });
+
+            return true;
         }
 
         private static void WriteErrorsAndSymbols(KernelInvocationContext context, WinDbgThread.DebuggerOutput output)
@@ -100,32 +117,43 @@ namespace WinDbgKernel
 
         public async Task LoadDump(string dumpFile)
         {
+            if (_isRunning)
+                throw new InvalidOperationException("A dump file is already loaded.");
+
             await WinDbgThread.Queue(async () =>
             {
                 DebugEngine engine = await WinDbgThread.GetDebugEngine().ConfigureAwait(true);
                 using var output = WinDbgThread.CaptureOutput();
 
+                EngineOptions options = new()
+                {
+                    SymPath = _sympath  
+                };
+
                 bool res = await engine.SendRequestAsync(new OpenDumpFileRequest(dumpFile, new())).ConfigureAwait(true);
                 if (res)
+                {
+                    _isRunning = true;
                     Console.WriteLine($"Dump file '{dumpFile}' loaded successfully.");
+                }
                 else
                     Console.WriteLine($"Failed to load dump file '{dumpFile}'.");
 
-                if (_sympath is not null)
-                {
-                    res = await engine.SendRequestAsync(new SetSymbolPathRequest(_sympath)).ConfigureAwait(true);
-                    if (res)
-                        Console.WriteLine($"Symbol path '{_sympath}' set successfully.");
-                    else
-                        Console.WriteLine($"Failed to set symbol path '{_sympath}'.");
-                }
+                await engine.SendRequestAsync(new ExecuteRequest(".prefer_dml 0"));
             });
         }
 
-        private Task SetSymPath(string path)
+        private async Task SetSymPath(string path)
         {
             _sympath = path;
-            return Task.CompletedTask;
+            if (_isRunning)
+            {
+                await WinDbgThread.Queue(async () =>
+                {
+                    DebugEngine engine = await WinDbgThread.GetDebugEngine().ConfigureAwait(true);
+                    await engine.SendRequestAsync(new SetSymbolPathRequest(path));
+                });
+            }
         }
 
         private static Task SetDbgEngPath(string path)
