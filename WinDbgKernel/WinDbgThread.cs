@@ -1,8 +1,11 @@
 ﻿
 using DbgX;
+using DbgX.Interfaces.Services.Internal;
 using DbgX.Requests;
+using Microsoft.Extensions.ObjectPool;
 using System.Collections.Concurrent;
 using System.Text;
+using WindowsDebugger.DbgEng;
 
 namespace WinDbgKernel
 {
@@ -13,15 +16,25 @@ namespace WinDbgKernel
         private static readonly BlockingCollection<Action> _workQueue = new BlockingCollection<Action>();
         private static readonly DebuggerTaskScheduler _scheduler;
         private static readonly TaskCompletionSource<DebugEngine> _engineTcs = new TaskCompletionSource<DebugEngine>();
-        private static readonly StringBuilder _output = new();
+        private static readonly ObjectPool<StringBuilder> _builderPool = new DefaultObjectPoolProvider().CreateStringBuilderPool();
+        private static DebuggerOutput? _output;
+        private static DbgEngPath? _dbgengPath;
+        public static DebuggerOutput CaptureOutput() => new();
+
 
         static WinDbgThread()
         {
             _syncContext = new DebuggerSynchronizationContext(_workQueue);
             _scheduler = new DebuggerTaskScheduler(_syncContext);
 
-            _debuggerThread = new Thread(ThreadProc) { IsBackground = true, Name = "Debug Scheduler" };
+            _debuggerThread = new Thread(ThreadProc) { IsBackground = false, Name = "DbgEng Controller Thread" };
+            //_debuggerThread.SetApartmentState(ApartmentState.STA);
             _debuggerThread.Start();
+        }
+        
+        public static void SetDbgEngPath(string path)
+        {
+            _dbgengPath = string.IsNullOrWhiteSpace(path) ? null : new(path);
         }
 
         public static Task<DebugEngine> GetDebugEngine() => _engineTcs.Task;
@@ -30,55 +43,38 @@ namespace WinDbgKernel
         {
             SynchronizationContext.SetSynchronizationContext(_syncContext);
 
-            // Initialize the DebugEngine and set the TaskCompletionSource
-            var engine = new DebugEngine(null, null, null, null, false, null, _syncContext);
+            var engine = new DebugEngine(_dbgengPath, null, null, null, false, null, _syncContext);
             engine.SendRequestAsync(new ExecuteRequest(".prefer_dml 0"));
             engine.DmlOutput += RecieveOutput;
             _engineTcs.SetResult(engine);
 
-            // Pump the queue of work items
             foreach (var workItem in _workQueue.GetConsumingEnumerable())
-            {
                 workItem();
-            }
         }
 
         private static void RecieveOutput(object? sender, OutputEventArgs e)
         {
-            Console.WriteLine($"{e.Mask} - {e.Output}");
-            lock (_output)
-                _output.Append(e.Output);
+            _output?.AddOutput(e.Mask, e.Output);
         }
 
-        public static Task Queue(Action workItem)
+        public static Task Queue(Func<Task> workItem)
         {
             TaskCompletionSource tcs = new();
-            _workQueue.Add(() =>
+            _workQueue.Add(async () =>
             {
-                workItem();
+                await workItem().ConfigureAwait(true);
                 tcs.SetResult();
-
-                lock (_output)
-                    _output.Clear();
             });
             return tcs.Task;
         }
 
-        public static Task<string> QueueWithOutput(Action workItem)
+        public static Task<T> Queue<T>(Func<Task<T>> workItem)
         {
-            TaskCompletionSource<string> tcs = new();
-            _workQueue.Add(() =>
+            TaskCompletionSource<T> tcs = new();
+            _workQueue.Add(async () =>
             {
-                lock (_output)
-                    _output.Clear();
-
-                workItem();
-
-                lock (_output)
-                {
-                    tcs.SetResult(_output.ToString());
-                    _output.Clear();
-                }
+                T t = await workItem().ConfigureAwait(true);
+                tcs.SetResult(t);
             });
 
             return tcs.Task;
@@ -121,7 +117,7 @@ namespace WinDbgKernel
 
             protected override IEnumerable<Task> GetScheduledTasks()
             {
-                return null;
+                return [];
             }
 
             protected override void QueueTask(Task task)
@@ -137,6 +133,77 @@ namespace WinDbgKernel
                 }
                 return false;
             }
+        }
+
+        class DbgEngPath(string path) : IDbgEnginePathCustomization
+        {
+            public string HomeDirectory { get; } = path;
+
+            public string GetEngHostPath(string architecture)
+            {
+                return Path.Combine(HomeDirectory, "EngHost.exe");
+            }
+
+            public string GetEnginePath(string architecture)
+            {
+                return HomeDirectory;
+            }
+        }
+
+        public class DebuggerOutput : IDisposable
+        {
+            private readonly Dictionary<DEBUG_OUTPUT, StringBuilder> _buffers = [];
+
+            public event Action<string>? OutputReceived;
+
+            public DebuggerOutput()
+            {
+                _output = this;
+            }
+
+            public void AddOutput(DEBUG_OUTPUT mask, string output)
+            {
+                if (mask == DEBUG_OUTPUT.PROMPT)
+                {
+                    output = output.Replace("&lt;", "<").Replace("&gt;", ">");
+                    AddOutput(DEBUG_OUTPUT.NORMAL, output);
+                }
+
+                lock (_buffers)
+                {
+                    if (!_buffers.TryGetValue(mask, out StringBuilder? buffer))
+                        _buffers[mask] = buffer = _builderPool.Get();
+
+                    buffer.Append(output);
+
+                    if (mask == DEBUG_OUTPUT.NORMAL)
+                        OutputReceived?.Invoke(output);
+                }
+            }
+
+            public void Dispose()
+            {
+                foreach (var buffer in _buffers.Values)
+                    _builderPool.Return(buffer);
+                _buffers.Clear();
+                _output = null;
+            }
+            
+            public string GetOutput(DEBUG_OUTPUT mask)
+            {
+                lock (_buffers)
+                {
+                    if (_buffers.TryGetValue(mask, out StringBuilder? buffer))
+                        return buffer.ToString();
+                }
+
+                return "";
+            }
+
+            public string Output => GetOutput(DEBUG_OUTPUT.NORMAL);
+            public string Errors => GetOutput(DEBUG_OUTPUT.ERROR);
+            public string Warnings => GetOutput(DEBUG_OUTPUT.WARNING);
+            public string Symbols => GetOutput(DEBUG_OUTPUT.SYMBOLS);
         }
     }
 }

@@ -1,0 +1,10 @@
+#!meta
+
+{"kernelInfo":{"defaultKernelName":"csharp","items":[{"aliases":[],"name":"csharp"}]}}
+
+#!csharp
+
+using Microsoft.DotNet.Interactive;
+
+var windbg = new WinDbgKernel.WinDbgKernel();
+((CompositeKernel)Kernel.Root).Add(windbg);
