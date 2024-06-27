@@ -1,0 +1,17 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows10.0.17763.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Debugging.Platform.DbgEng" Version="20240409.1131.0" />
+    <PackageReference Include="Microsoft.Debugging.Platform.DbgX" Version="20240605.1.0" />
+    <PackageReference Include="Microsoft.Diagnostics.Runtime.Utilities" Version="3.0.442202" />
+    <PackageReference Include="Microsoft.DotNet.Interactive" Version="1.0.0-beta.24229.4" />
+    <PackageReference Include="Nito.AsyncEx" Version="5.1.2" />
+  </ItemGroup>
+
+</Project>

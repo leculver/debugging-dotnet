@@ -1,0 +1,9 @@
+{
+  "profiles": {
+    "Repl": {
+      "commandName": "Executable",
+      "executablePath": "C:\\Users\\leculver\\.dotnet\\tools\\dotnet-repl.exe",
+      "commandLineArgs": "--run D:\\git\\debugging-dotnet\\test.ipynb --exit-after-run"
+    }
+  }
+}
