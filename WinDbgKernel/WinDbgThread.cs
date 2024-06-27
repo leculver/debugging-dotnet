@@ -21,14 +21,12 @@ namespace WinDbgKernel
         private static DbgEngPath? _dbgengPath;
         public static DebuggerOutput CaptureOutput() => new();
 
-
         static WinDbgThread()
         {
             _syncContext = new DebuggerSynchronizationContext(_workQueue);
             _scheduler = new DebuggerTaskScheduler(_syncContext);
 
             _debuggerThread = new Thread(ThreadProc) { IsBackground = false, Name = "DbgEng Controller Thread" };
-            //_debuggerThread.SetApartmentState(ApartmentState.STA);
             _debuggerThread.Start();
         }
         
@@ -44,7 +42,6 @@ namespace WinDbgKernel
             SynchronizationContext.SetSynchronizationContext(_syncContext);
 
             var engine = new DebugEngine(_dbgengPath, null, null, null, false, null, _syncContext);
-            engine.SendRequestAsync(new ExecuteRequest(".prefer_dml 0"));
             engine.DmlOutput += RecieveOutput;
             _engineTcs.SetResult(engine);
 
@@ -80,14 +77,9 @@ namespace WinDbgKernel
             return tcs.Task;
         }
 
-        private class DebuggerSynchronizationContext : SynchronizationContext
+        private class DebuggerSynchronizationContext(BlockingCollection<Action> workQueue) : SynchronizationContext
         {
-            private readonly BlockingCollection<Action> _workQueue;
-
-            public DebuggerSynchronizationContext(BlockingCollection<Action> workQueue)
-            {
-                _workQueue = workQueue;
-            }
+            private readonly BlockingCollection<Action> _workQueue = workQueue;
 
             public override void Post(SendOrPostCallback d, object? state)
             {
@@ -106,14 +98,9 @@ namespace WinDbgKernel
             }
         }
 
-        private class DebuggerTaskScheduler : TaskScheduler
+        private class DebuggerTaskScheduler(SynchronizationContext syncContext) : TaskScheduler
         {
-            private readonly SynchronizationContext _syncContext;
-
-            public DebuggerTaskScheduler(SynchronizationContext syncContext)
-            {
-                _syncContext = syncContext;
-            }
+            private readonly SynchronizationContext _syncContext = syncContext;
 
             protected override IEnumerable<Task> GetScheduledTasks()
             {
@@ -150,7 +137,7 @@ namespace WinDbgKernel
             }
         }
 
-        public class DebuggerOutput : IDisposable
+        public sealed class DebuggerOutput : IDisposable
         {
             private readonly Dictionary<DEBUG_OUTPUT, StringBuilder> _buffers = [];
 
@@ -163,11 +150,9 @@ namespace WinDbgKernel
 
             public void AddOutput(DEBUG_OUTPUT mask, string output)
             {
+                output = output.Replace("&lt;", "<").Replace("&gt;", ">");
                 if (mask == DEBUG_OUTPUT.PROMPT)
-                {
-                    output = output.Replace("&lt;", "<").Replace("&gt;", ">");
                     AddOutput(DEBUG_OUTPUT.NORMAL, output);
-                }
 
                 lock (_buffers)
                 {

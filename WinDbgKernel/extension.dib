@@ -6,5 +6,4 @@
 
 using Microsoft.DotNet.Interactive;
 
-var windbg = new WinDbgKernel.WinDbgKernel();
-((CompositeKernel)Kernel.Root).Add(windbg);
+((CompositeKernel)Kernel.Root).Add(new WinDbgKernel.WinDbgKernel());
