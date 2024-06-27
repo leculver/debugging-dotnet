@@ -5,6 +5,7 @@ using Microsoft.Extensions.ObjectPool;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Text;
+using WindowsDebugger.DbgEng;
 
 namespace WinDbgKernel
 {
@@ -15,32 +16,66 @@ namespace WinDbgKernel
         private static readonly BlockingCollection<Action> _workQueue = new BlockingCollection<Action>();
         private static readonly DebuggerTaskScheduler _scheduler;
         private static readonly TaskCompletionSource<DebugEngine> _engineTcs = new TaskCompletionSource<DebugEngine>();
-        private static StringBuilder? _output;
-
         private static readonly ObjectPool<StringBuilder> _builderPool = new DefaultObjectPoolProvider().CreateStringBuilderPool();
+        private static DebuggerOutput? _output;
 
-        internal class OutputHolder : IDisposable
+        public class DebuggerOutput : IDisposable
         {
-            private readonly StringBuilder _buffer;
+            private readonly Dictionary<DEBUG_OUTPUT, StringBuilder> _buffers = [];
 
-            public OutputHolder()
+            public event Action<string>? OutputReceived;
+
+            public DebuggerOutput()
             {
-                Debug.Assert(WinDbgThread._output is null);
-                _buffer = _builderPool.Get();
-                WinDbgThread._output = _buffer;
+                _output = this;
+            }
+
+            public void AddOutput(DEBUG_OUTPUT mask, string output)
+            {
+                if (mask == DEBUG_OUTPUT.PROMPT)
+                {
+                    output = output.Replace("&lt;", "<").Replace("&gt;", ">");
+                    AddOutput(DEBUG_OUTPUT.NORMAL, output);
+                }
+
+                lock (_buffers)
+                {
+                    if (!_buffers.TryGetValue(mask, out StringBuilder? buffer))
+                        _buffers[mask] = buffer = _builderPool.Get();
+
+                    buffer.Append(output);
+
+                    if (mask == DEBUG_OUTPUT.NORMAL)
+                        OutputReceived?.Invoke(output);
+                }
             }
 
             public void Dispose()
             {
-                Debug.Assert(WinDbgThread._output == _buffer);
-                WinDbgThread._output = null;
-                _builderPool.Return(_buffer);
+                foreach (var buffer in _buffers.Values)
+                    _builderPool.Return(buffer);
+                _buffers.Clear();
+                _output = null;
+            }
+            
+            public string GetOutput(DEBUG_OUTPUT mask)
+            {
+                lock (_buffers)
+                {
+                    if (_buffers.TryGetValue(mask, out StringBuilder? buffer))
+                        return buffer.ToString();
+                }
+
+                return "";
             }
 
-            public override string ToString() => _buffer.ToString();
+            public string Output => GetOutput(DEBUG_OUTPUT.NORMAL);
+            public string Errors => GetOutput(DEBUG_OUTPUT.ERROR);
+            public string Warnings => GetOutput(DEBUG_OUTPUT.WARNING);
+            public string Symbols => GetOutput(DEBUG_OUTPUT.SYMBOLS);
         }
 
-        public static IDisposable CaptureOutput() => new OutputHolder();
+        public static DebuggerOutput CaptureOutput() => new DebuggerOutput();
 
         static WinDbgThread()
         {
@@ -73,10 +108,7 @@ namespace WinDbgKernel
 
         private static void RecieveOutput(object? sender, OutputEventArgs e)
         {
-            StringBuilder? output = _output;
-            if (output is not null)
-                lock (output)
-                    output.Append(e.Output);
+            _output?.AddOutput(e.Mask, e.Output);
         }
 
         public static Task Queue(Func<Task> workItem)
@@ -86,9 +118,6 @@ namespace WinDbgKernel
             {
                 await workItem().ConfigureAwait(true);
                 tcs.SetResult();
-
-                lock (_output)
-                    _output.Clear();
             });
             return tcs.Task;
         }
@@ -100,29 +129,6 @@ namespace WinDbgKernel
             {
                 T t = await workItem().ConfigureAwait(true);
                 tcs.SetResult(t);
-
-                lock (_output)
-                    _output.Clear();
-            });
-
-            return tcs.Task;
-        }
-
-        public static Task<string> QueueWithOutput(Action workItem)
-        {
-            TaskCompletionSource<string> tcs = new();
-            _workQueue.Add(() =>
-            {
-                lock (_output)
-                    _output.Clear();
-
-                workItem();
-
-                lock (_output)
-                {
-                    tcs.SetResult(_output.ToString());
-                    _output.Clear();
-                }
             });
 
             return tcs.Task;
@@ -165,7 +171,7 @@ namespace WinDbgKernel
 
             protected override IEnumerable<Task> GetScheduledTasks()
             {
-                return null;
+                return [];
             }
 
             protected override void QueueTask(Task task)

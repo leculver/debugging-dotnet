@@ -3,10 +3,7 @@ using Microsoft.DotNet.Interactive.Commands;
 using System.CommandLine;
 using DbgX;
 using DbgX.Requests.Initialization;
-using DbgX.Interfaces.Services;
 using DbgX.Requests;
-using System.IO;
-using Nito.AsyncEx;
 
 namespace WinDbgKernel
 {
@@ -14,7 +11,6 @@ namespace WinDbgKernel
     {
         const string LoadDumpCommand = "#!loadDump";
         const string SetSymPathCommand = "#!sympath";
-        private DbgEngWrapper? _dbgeng;
         private string? _sympath;
 
         public WinDbgKernel() : base("windbg")
@@ -45,16 +41,37 @@ namespace WinDbgKernel
 
         public async Task HandleAsync(SubmitCode command, KernelInvocationContext context)
         {
-            string result = await WinDbgThread.Queue(async () =>
+            foreach (var line in command.Code.Split('\n').Where(x => !string.IsNullOrWhiteSpace(x)).Select(x => x.Trim()))
+                await RunOneCommand(line, context);
+        }
+
+        private static async Task RunOneCommand(string line, KernelInvocationContext context)
+        {
+            await WinDbgThread.Queue(async () =>
             {
                 DebugEngine engine = await WinDbgThread.GetDebugEngine().ConfigureAwait(true);
-                using IDisposable output = WinDbgThread.CaptureOutput();
-                bool res = await engine.SendRequestAsync(new ExecuteRequest("k")).ConfigureAwait(true);
-                return output.ToString() ?? "";
-            });
+                using var output = WinDbgThread.CaptureOutput();
+                output.OutputReceived += (str) => context.DisplayStandardOut(str);
+                bool res = await engine.SendRequestAsync(new ExecuteRequest(line)).ConfigureAwait(true);
 
-            context.DisplayStandardOut(result);
-            Console.WriteLine("complete");
+                WriteErrorsAndSymbols(context, output);
+            });
+        }
+
+        private static void WriteErrorsAndSymbols(KernelInvocationContext context, WinDbgThread.DebuggerOutput output)
+        {
+            string symbols = output.Symbols;
+            if (!string.IsNullOrWhiteSpace(symbols))
+                context.DisplayStandardOut("Symbol requests:\n" + symbols);
+
+            string errors = output.Errors;
+            string warnings = output.Warnings;
+
+            if (!string.IsNullOrWhiteSpace(errors))
+                context.DisplayStandardError(errors);
+
+            if (!string.IsNullOrWhiteSpace(warnings))
+                context.DisplayStandardError(warnings);
         }
 
         public async Task LoadDump(string dumpFile)
@@ -62,8 +79,27 @@ namespace WinDbgKernel
             await WinDbgThread.Queue(async () =>
             {
                 DebugEngine engine = await WinDbgThread.GetDebugEngine().ConfigureAwait(true);
+                using var output = WinDbgThread.CaptureOutput();
+
                 bool res = await engine.SendRequestAsync(new OpenDumpFileRequest(dumpFile, new())).ConfigureAwait(true);
-                Console.WriteLine(res);
+                if (res)
+                    Console.WriteLine($"Dump file '{dumpFile}' loaded successfully.");
+                else
+                    Console.WriteLine($"Failed to load dump file '{dumpFile}'.");
+
+                if (_sympath is not null)
+                {
+                    res = await engine.SendRequestAsync(new SetSymbolPathRequest(_sympath)).ConfigureAwait(true);
+                    if (res)
+                        Console.WriteLine($"Symbol path '{_sympath}' set successfully.");
+                    else
+                        Console.WriteLine($"Failed to set symbol path '{_sympath}'.");
+                }
+
+                Console.WriteLine(output.Output);
+                Console.WriteLine(output.Errors);
+                Console.WriteLine(output.Warnings);
+                Console.WriteLine(output.Symbols);
             });
         }
 
