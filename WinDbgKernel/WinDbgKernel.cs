@@ -4,22 +4,24 @@ using System.CommandLine;
 using DbgX;
 using DbgX.Requests.Initialization;
 using DbgX.Requests;
-using System.Runtime.InteropServices;
 
 namespace WinDbgKernel
 {
     public class WinDbgKernel : Kernel, IKernelCommandHandler<SubmitCode>
     {
+        const string SymbolOutputCommand = "#!verboseSymbols";
         const string LoadDumpCommand = "#!loadDump";
         const string SymPathCommand = "#!sympath";
         const string DbgEngPathCommand = "#!dbgengPath";
         private string? _sympath;
+        private static bool _displaySymbols;
 
         public WinDbgKernel() : base("windbg")
         {
             RegisterSymPathCommand();
             RegisterLoadDumpCommand();
             RegisterWindbgPathCommand();
+            RegisterSymbolOutputCommand();
 
             _sympath = Environment.GetEnvironmentVariable("_NT_SYMBOL_PATH");
             if (string.IsNullOrWhiteSpace(_sympath))
@@ -50,6 +52,14 @@ namespace WinDbgKernel
             AddDirective(setDbgEngPathCommand);
         }
 
+        private void RegisterSymbolOutputCommand()
+        {
+            var displaySymbols = new Argument<bool>("display", "Display symbol requests in the output.");
+            var symbolsCommand = new Command(SymbolOutputCommand) { displaySymbols };
+            symbolsCommand.SetHandler(SetSymbolStatus, displaySymbols);
+            AddDirective(symbolsCommand);
+        }
+
         public async Task HandleAsync(SubmitCode command, KernelInvocationContext context)
         {
             foreach (var line in command.Code.Split('\n').Where(x => !string.IsNullOrWhiteSpace(x)).Select(x => x.Trim()))
@@ -71,9 +81,12 @@ namespace WinDbgKernel
 
         private static void WriteErrorsAndSymbols(KernelInvocationContext context, WinDbgThread.DebuggerOutput output)
         {
-            string symbols = output.Symbols;
-            if (!string.IsNullOrWhiteSpace(symbols))
-                context.DisplayStandardOut("Symbol requests:\n" + symbols);
+            if (_displaySymbols)
+            {
+                string symbols = output.Symbols;
+                if (!string.IsNullOrWhiteSpace(symbols))
+                    context.DisplayStandardOut("\nSymbol requests:\n" + symbols);
+            }
 
             string errors = output.Errors;
             string warnings = output.Warnings;
@@ -118,6 +131,12 @@ namespace WinDbgKernel
         private static Task SetDbgEngPath(string path)
         {
             WinDbgThread.SetDbgEngPath(path);
+            return Task.CompletedTask;
+        }
+
+        private static Task SetSymbolStatus(bool enabled)
+        {
+            _displaySymbols = enabled;
             return Task.CompletedTask;
         }
     }
