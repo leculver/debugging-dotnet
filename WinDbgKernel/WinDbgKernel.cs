@@ -5,10 +5,17 @@ using DbgX;
 using DbgX.Requests.Initialization;
 using DbgX.Requests;
 using DbgX.Interfaces.Services;
+using DbgX.Interfaces.Enums;
+using Microsoft.DotNet.Interactive.ValueSharing;
+using Microsoft.DotNet.Interactive.Events;
 
 namespace WinDbgKernel
 {
-    public class WinDbgKernel : Kernel, IKernelCommandHandler<SubmitCode>
+    public class WinDbgKernel :
+                    Kernel,
+                    IKernelCommandHandler<SubmitCode>,
+                    IKernelCommandHandler<RequestValueInfos>,
+                    IKernelCommandHandler<RequestValue>
     {
         const string SymbolOutputCommand = "#!verboseSymbols";
         const string LoadDumpCommand = "#!loadDump";
@@ -17,6 +24,7 @@ namespace WinDbgKernel
         private string? _sympath;
         private static bool _displaySymbols;
         private bool _isRunning;
+        private DebugModelProcess? _curprocess;
 
         public WinDbgKernel() : base("windbg")
         {
@@ -166,6 +174,26 @@ namespace WinDbgKernel
         {
             _displaySymbols = enabled;
             return Task.CompletedTask;
+        }
+
+        public async Task HandleAsync(RequestValueInfos command, KernelInvocationContext context)
+        {
+            _curprocess ??= await DebugModelProcess.CreateAsync();
+            KernelValueInfo kvi = new("curprocess", FormattedValue.CreateSingleFromObject(_curprocess), typeof(DebugModelProcess), nameof(DebugModelProcess));
+            context.Publish(new ValueInfosProduced([kvi], command));
+        }
+
+        public async Task HandleAsync(RequestValue command, KernelInvocationContext context)
+        {
+            if (command.Name == "curprocess")
+            {
+                _curprocess ??= await DebugModelProcess.CreateAsync();
+                context.PublishValueProduced(command, _curprocess);
+            }
+            else
+            {
+                context.Fail(command, message: $"Value '{command.Name}' not found in kernel {Name}");
+            }
         }
     }
 }

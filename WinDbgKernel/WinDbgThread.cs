@@ -1,7 +1,6 @@
 ﻿
 using DbgX;
 using DbgX.Interfaces.Services.Internal;
-using DbgX.Requests;
 using Microsoft.Extensions.ObjectPool;
 using System.Collections.Concurrent;
 using System.Text;
